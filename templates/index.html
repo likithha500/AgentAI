@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shawn — AI Multimodal & Voice Assistant</title>
+    <meta name="description" content="Shawn is a multimodal, voice-enabled AI assistant powered by Flask and Groq API. Analyze images, videos, audio, and documents with instant inference.">
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <!-- Marked.js for Markdown Rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    
+    <!-- Prism.js for Syntax Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    
+    <!-- KaTeX for Math rendering -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js"></script>
+    
+    <!-- App Stylesheet -->
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="app-layout">
+        <!-- Backdrop Overlay for Mobile Sidebar -->
+        <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
+
+        <!-- Sidebar -->
+        <aside id="sidebar" class="sidebar">
+            <div class="sidebar-header">
+                <div class="brand">
+                    <div class="brand-icon">
+                        <i data-lucide="bot"></i>
+                    </div>
+                    <div class="brand-text">
+                        <span class="brand-title">Shawn</span>
+                        <span class="brand-badge">AI</span>
+                    </div>
+                </div>
+                <button id="close-sidebar-btn" class="icon-btn" title="Collapse Sidebar">
+                    <i data-lucide="chevron-left"></i>
+                </button>
+            </div>
+
+            <!-- New Chat Action -->
+            <button id="new-chat-btn" class="btn btn-primary new-chat-btn">
+                <i data-lucide="plus"></i>
+                <span>New Chat</span>
+            </button>
+
+            <!-- Search Past Chats -->
+            <div class="search-container">
+                <i data-lucide="search" class="search-icon"></i>
+                <input type="text" id="search-input" placeholder="Search chats..." autocomplete="off">
+                <button id="clear-search-btn" class="clear-search-btn hidden">
+                    <i data-lucide="x"></i>
+                </button>
+            </div>
+
+            <!-- Conversations History List -->
+            <div id="history-container" class="history-container">
+                <div id="history-loading" class="history-loading">
+                    <div class="spinner"></div>
+                    <span>Loading chats...</span>
+                </div>
+                
+                <div id="history-groups" class="history-groups">
+                    <!-- Dynamic categories injected by JavaScript -->
+                </div>
+                
+                <div id="history-empty" class="history-empty hidden">
+                    <i data-lucide="message-square-dashed"></i>
+                    <p>No conversations yet</p>
+                </div>
+            </div>
+
+            <!-- Sidebar Footer -->
+            <div class="sidebar-footer">
+                <div id="api-status-badge" class="api-status-badge" title="Click to configure API Key">
+                    <span class="status-dot online"></span>
+                    <span id="api-status-text" class="status-text">Checking API Status...</span>
+                </div>
+                
+                <div class="sidebar-footer-actions">
+                    <button id="open-settings-btn" class="footer-btn" title="Settings & API Key">
+                        <i data-lucide="settings"></i>
+                        <span>Settings</span>
+                    </button>
+                    <button id="clear-history-btn" class="footer-btn text-danger" title="Clear all chat history">
+                        <i data-lucide="trash-2"></i>
+                    </button>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Chat Area -->
+        <main class="chat-main">
+            <!-- Top Navigation Bar -->
+            <header class="chat-header">
+                <div class="header-left">
+                    <button id="toggle-sidebar-btn" class="icon-btn" title="Toggle Sidebar">
+                        <i data-lucide="menu"></i>
+                    </button>
+                    
+                    <!-- Model Selector Dropdown -->
+                    <div class="model-selector-wrapper">
+                        <select id="model-select" class="model-select">
+                            <option value="qwen/qwen3.8-27b" selected>Qwen 3.8 27B (Recommended)</option>
+                            <option value="groq/compound-mini">Groq Compound Mini (Fastest)</option>
+                            <option value="groq/compound">Groq Compound (Deep)</option>
+                            <option value="openai/gpt-oss-120b">GPT OSS 120B (Large)</option>
+                            <option value="openai/gpt-oss-20b">GPT OSS 20B (Compact)</option>
+                            <option value="allam-2-7b">Allam 2 7B (Multilingual)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="header-center">
+                    <span id="current-chat-title" class="current-chat-title" title="Double click to rename">New Chat</span>
+                </div>
+
+                <div class="header-right">
+                    <!-- Theme Toggle Button (Light / Dark) -->
+                    <button id="theme-toggle-btn" class="icon-btn" title="Toggle Light / Dark Mode">
+                        <i data-lucide="sun" id="theme-toggle-icon"></i>
+                    </button>
+
+                    <!-- Voice Output (TTS) Auto-Read Toggle -->
+                    <button id="tts-toggle-btn" class="header-action-btn" title="Toggle Shawn Voice Auto-Read">
+                        <i data-lucide="volume-2"></i>
+                        <span class="btn-label">Voice Read</span>
+                        <span id="tts-status-pill" class="toggle-pill off">OFF</span>
+                    </button>
+
+                    <!-- Voice Engine Settings -->
+                    <button id="voice-settings-btn" class="icon-btn" title="Voice & Speech Settings">
+                        <i data-lucide="mic"></i>
+                    </button>
+
+                    <!-- Export Chat -->
+                    <button id="export-chat-btn" class="icon-btn" title="Export Conversation">
+                        <i data-lucide="download"></i>
+                    </button>
+                </div>
+            </header>
+
+            <!-- Chat Messages Container -->
+            <div id="messages-container" class="messages-container">
+                <!-- Welcome Screen / Empty State -->
+                <div id="welcome-screen" class="welcome-screen">
+                    <div class="welcome-badge">
+                        <i data-lucide="sparkles"></i>
+                        <span>Meet Shawn — Your Personal AI</span>
+                    </div>
+                    <h1 class="welcome-title">How can I assist you today?</h1>
+                    <p class="welcome-subtitle">Ask questions, speak via voice, or upload images, videos, audio, and documents for deep analysis.</p>
+
+                    <!-- Quick Prompt Cards -->
+                    <div class="prompt-cards-grid">
+                        <div class="prompt-card" data-prompt="Analyze this code for performance bottlenecks and explain how to optimize it.">
+                            <div class="card-icon"><i data-lucide="code"></i></div>
+                            <div class="card-content">
+                                <h4>Code & Architecture</h4>
+                                <p>Review scripts, solve algorithms, and optimize performance</p>
+                            </div>
+                        </div>
+
+                        <div class="prompt-card" data-prompt="Please summarize the key takeaways, data points, and action items from this document.">
+                            <div class="card-icon"><i data-lucide="file-text"></i></div>
+                            <div class="card-content">
+                                <h4>Document Intelligence</h4>
+                                <p>Upload PDF, DOCX, CSV, or spreadsheets for instant summaries</p>
+                            </div>
+                        </div>
+
+                        <div class="prompt-card" data-prompt="Can you examine the uploaded image or chart and explain what is visible in detail?">
+                            <div class="card-icon"><i data-lucide="image"></i></div>
+                            <div class="card-content">
+                                <h4>Visual Analysis</h4>
+                                <p>Upload images or diagrams to extract insights and breakdown details</p>
+                            </div>
+                        </div>
+
+                        <div class="prompt-card" data-prompt="Transcribe and summarize the main discussion points from this audio recording.">
+                            <div class="card-icon"><i data-lucide="headphones"></i></div>
+                            <div class="card-content">
+                                <h4>Voice & Audio</h4>
+                                <p>Speak naturally via microphone or upload voice notes for transcription</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Message List (Appended dynamically) -->
+                <div id="messages-list" class="messages-list"></div>
+
+                <!-- Live Stream / Generating Indicator -->
+                <div id="typing-indicator" class="typing-indicator hidden">
+                    <div class="assistant-avatar">
+                        <i data-lucide="bot"></i>
+                    </div>
+                    <div class="typing-bubble">
+                        <div class="typing-dot"></div>
+                        <div class="typing-dot"></div>
+                        <div class="typing-dot"></div>
+                        <span class="typing-status-text">Shawn is thinking...</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Staged File Attachments Preview Tray -->
+            <div id="attachments-tray" class="attachments-tray hidden">
+                <div class="tray-header">
+                    <span class="tray-title"><i data-lucide="paperclip"></i> Attached Files (<span id="attachments-count">0</span>)</span>
+                    <button id="clear-all-attachments-btn" class="clear-tray-btn">Clear All</button>
+                </div>
+                <div id="attachments-list" class="attachments-list"></div>
+            </div>
+
+            <!-- Voice Recording Waveform Modal Bar -->
+            <div id="recording-bar" class="recording-bar hidden">
+                <div class="recording-pulse"></div>
+                <div class="recording-info">
+                    <span class="recording-title">Shawn is listening...</span>
+                    <span id="recording-timer" class="recording-timer">00:00</span>
+                    <span id="live-speech-preview" class="live-speech-preview">Speak naturally into your microphone</span>
+                </div>
+                <div class="recording-actions">
+                    <button id="cancel-recording-btn" class="btn btn-secondary btn-sm" title="Cancel">Cancel</button>
+                    <button id="stop-recording-btn" class="btn btn-primary btn-sm" title="Done & Transcribe">
+                        <i data-lucide="check"></i> Done
+                    </button>
+                </div>
+            </div>
+
+            <!-- Chat Input Dock -->
+            <footer class="chat-input-dock">
+                <!-- Drop Zone Highlight -->
+                <div id="drop-overlay" class="drop-overlay hidden">
+                    <i data-lucide="upload-cloud"></i>
+                    <p>Drop files here to analyze with Shawn</p>
+                </div>
+
+                <div class="input-container">
+                    <!-- Attachment Button (Label linked directly to file input) -->
+                    <label for="file-input" id="attach-btn" class="action-btn" title="Upload Image, Audio, Video, or Document" role="button" tabindex="0" style="cursor: pointer;">
+                        <i data-lucide="paperclip"></i>
+                    </label>
+                    <input type="file" id="file-input" multiple style="position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); border: 0;" accept="*/*">
+
+                    <!-- Textarea Input -->
+                    <textarea 
+                        id="message-input" 
+                        placeholder="Message Shawn or upload media... (Shift + Enter for new line)"
+                        rows="1"
+                    ></textarea>
+
+                    <!-- User Voice Input (Mic) Button -->
+                    <button id="mic-btn" class="action-btn mic-btn" title="Hold or Click to Speak">
+                        <i data-lucide="mic"></i>
+                    </button>
+
+                    <!-- Stop TTS Playback Button (Visible when speaking) -->
+                    <button id="stop-tts-btn" class="action-btn stop-tts-btn hidden" title="Stop Shawn's Voice">
+                        <i data-lucide="square"></i>
+                    </button>
+
+                    <!-- Send Message Button -->
+                    <button id="send-btn" class="action-btn send-btn" title="Send Message">
+                        <i data-lucide="arrow-up"></i>
+                    </button>
+                </div>
+                <div class="input-hints">
+                    <span>Press <b>Enter</b> to send &bull; <b>Shift + Enter</b> for new line &bull; Drop files to analyze</span>
+                </div>
+            </footer>
+        </main>
+    </div>
+
+    <!-- SETTINGS & API KEY MODAL -->
+    <div id="settings-modal" class="modal hidden">
+        <div class="modal-backdrop"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <div class="modal-title">
+                    <i data-lucide="settings"></i>
+                    <h3>Shawn Settings & API Key</h3>
+                </div>
+                <button class="close-modal-btn icon-btn" data-close="settings-modal">
+                    <i data-lucide="x"></i>
+                </button>
+            </div>
+            
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="groq-api-key-input">
+                        <span>Groq API Key</span>
+                        <a href="https://console.groq.com/keys" target="_blank" class="text-link">Get Free Key <i data-lucide="external-link"></i></a>
+                    </label>
+                    <div class="password-input-wrapper">
+                        <input type="password" id="groq-api-key-input" placeholder="gsk_..." autocomplete="off">
+                        <button id="toggle-key-visibility" class="icon-btn sm" type="button">
+                            <i data-lucide="eye"></i>
+                        </button>
+                    </div>
+                    <small class="form-help">Stored safely in your <code>.env</code> file.</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="default-model-select">Default Chat Model</label>
+                    <select id="default-model-select" class="form-control">
+                        <option value="qwen/qwen3.8-27b" selected>Qwen 3.8 27B (Recommended)</option>
+                        <option value="groq/compound-mini">Groq Compound Mini (Fastest)</option>
+                        <option value="groq/compound">Groq Compound (Deep)</option>
+                        <option value="openai/gpt-oss-120b">GPT OSS 120B (Large)</option>
+                        <option value="openai/gpt-oss-20b">GPT OSS 20B (Compact)</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="system-prompt-input">System Prompt / Persona</label>
+                    <textarea id="system-prompt-input" rows="3" class="form-control" placeholder="Define custom instructions for Shawn..."></textarea>
+                </div>
+
+                <div id="api-test-result" class="api-test-result hidden"></div>
+            </div>
+
+            <div class="modal-footer">
+                <button id="test-api-key-btn" class="btn btn-secondary">
+                    <i data-lucide="check-circle-2"></i> Test Connection
+                </button>
+                <button id="save-settings-btn" class="btn btn-primary">
+                    <i data-lucide="save"></i> Save Settings
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- VOICE SETTINGS MODAL -->
+    <div id="voice-settings-modal" class="modal hidden">
+        <div class="modal-backdrop"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <div class="modal-title">
+                    <i data-lucide="volume-2"></i>
+                    <h3>Shawn's Voice & Audio Settings</h3>
+                </div>
+                <button class="close-modal-btn icon-btn" data-close="voice-settings-modal">
+                    <i data-lucide="x"></i>
+                </button>
+            </div>
+            
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="tts-voice-select">Voice Selection</label>
+                    <select id="tts-voice-select" class="form-control"></select>
+                    <small class="form-help">Natural text-to-speech voices provided by your system browser.</small>
+                </div>
+
+                <div class="form-group">
+                    <div class="slider-header">
+                        <label for="tts-rate-slider">Speech Speed: <span id="rate-val">1.0x</span></label>
+                    </div>
+                    <input type="range" id="tts-rate-slider" min="0.5" max="2.0" step="0.1" value="1.0" class="range-slider">
+                </div>
+
+                <div class="form-group">
+                    <div class="slider-header">
+                        <label for="tts-pitch-slider">Speech Pitch: <span id="pitch-val">1.0</span></label>
+                    </div>
+                    <input type="range" id="tts-pitch-slider" min="0.5" max="1.5" step="0.1" value="1.0" class="range-slider">
+                </div>
+
+                <div class="form-group checkbox-group">
+                    <label class="custom-checkbox">
+                        <input type="checkbox" id="auto-speak-checkbox">
+                        <span class="checkmark"></span>
+                        <span>Auto-speak Shawn's responses aloud</span>
+                    </label>
+                </div>
+
+                <div class="form-group checkbox-group">
+                    <label class="custom-checkbox">
+                        <input type="checkbox" id="stt-whisper-checkbox" checked>
+                        <span class="checkmark"></span>
+                        <span>Use Groq Whisper for High-Accuracy Voice Input</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <button id="preview-voice-btn" class="btn btn-secondary">
+                    <i data-lucide="play"></i> Test Voice
+                </button>
+                <button class="btn btn-primary close-modal-btn" data-close="voice-settings-modal">
+                    Done
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MEDIA PREVIEW LIGHTBOX MODAL -->
+    <div id="media-modal" class="modal media-modal hidden">
+        <div class="modal-backdrop"></div>
+        <div class="modal-content media-modal-content">
+            <button class="close-media-modal-btn icon-btn" title="Close Preview">
+                <i data-lucide="x"></i>
+            </button>
+            <div id="media-preview-body" class="media-preview-body"></div>
+        </div>
+    </div>
+
+    <!-- RENAME CHAT MODAL -->
+    <div id="rename-modal" class="modal hidden">
+        <div class="modal-backdrop"></div>
+        <div class="modal-content" style="max-width: 400px;">
+            <div class="modal-header">
+                <div class="modal-title">
+                    <i data-lucide="edit-3"></i>
+                    <h3>Rename Conversation</h3>
+                </div>
+                <button class="close-modal-btn icon-btn" data-close="rename-modal">
+                    <i data-lucide="x"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="rename-chat-input">New Title</label>
+                    <input type="text" id="rename-chat-input" class="form-control" placeholder="Enter conversation title...">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary close-modal-btn" data-close="rename-modal">Cancel</button>
+                <button id="save-rename-btn" class="btn btn-primary">Save Title</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- App JavaScript Modules -->
+    <script src="/static/js/voice.js"></script>
+    <script src="/static/js/upload.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

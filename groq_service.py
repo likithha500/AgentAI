@@ -55,6 +55,33 @@ AVAILABLE_MODELS = [
     }
 ]
 
+FALLBACK_MODELS = [
+    "groq/compound-mini",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.8-27b",
+    "groq/compound",
+    "allam-2-7b"
+]
+
+
+def get_safe_max_tokens(model_name, requested_max=None):
+    """
+    Returns safe max_tokens to strictly prevent Groq 429 OTPM
+    (Output Tokens Per Minute) rate limit exceeded errors on free tiers.
+    """
+    if not model_name:
+        return 800
+    model_lower = str(model_name).lower()
+    
+    # Qwen models on free tier enforce a tight 1000 OTPM limit
+    if "qwen" in model_lower:
+        return min(requested_max or 750, 750)
+    elif "120b" in model_lower:
+        return min(requested_max or 1000, 1000)
+    else:
+        return min(requested_max or 2048, 2048)
+
+
 class GroqService:
     def __init__(self, api_key=None):
         self.api_key = api_key
@@ -75,7 +102,7 @@ class GroqService:
         
         if self._client is None or self.api_key != current_key:
             self.api_key = current_key
-            self._client = Groq(api_key=current_key)
+            self._client = Groq(api_key=current_key, max_retries=0)
         return self._client
 
     def is_configured(self):
@@ -143,6 +170,104 @@ class GroqService:
             )
         return transcription.text
 
+    def classify_and_route_intent(self, user_message, conversation_history=None, attachments=None):
+        """
+        Analyzes the user's request to determine if it requires TEXT, IMAGE, or BOTH.
+        Uses fast heuristic pre-checks and lightweight classifier models
+        to avoid exhausting main chat model token quotas.
+        """
+        if not user_message or not user_message.strip():
+            return {"action": "TEXT", "image_prompt": "", "reasoning": "Empty message"}
+
+        cleaned = user_message.strip()
+        lower_msg = cleaned.lower()
+
+        # 1. Fast Heuristic Checks (instant, 0 tokens consumed)
+        has_text_intent = any(k in lower_msg for k in [
+            "explain", "what is", "tell me", "how does", "summarize", "guide", 
+            "article", "write a story", "overview", "describe how", "breakdown", "why does"
+        ])
+        has_image_intent = any(k in lower_msg for k in [
+            "poster", "infographic", "image", "diagram", "illustration", 
+            "picture", "artwork", "wallpaper", "draw ", "draw me", "visualize", "render "
+        ])
+
+        if has_text_intent and has_image_intent:
+            return {
+                "action": "BOTH",
+                "image_prompt": cleaned,
+                "reasoning": "Heuristic match for BOTH text and image"
+            }
+
+        pure_image_starters = [
+            "create a poster", "make a poster", "generate an image", "create an image",
+            "draw an image", "make an image", "draw a ", "draw me ", "generate a picture",
+            "create artwork", "make a wallpaper", "design a poster"
+        ]
+        if any(lower_msg.startswith(prefix) for prefix in pure_image_starters) or (has_image_intent and not has_text_intent and len(cleaned.split()) <= 15):
+            return {
+                "action": "IMAGE",
+                "image_prompt": cleaned,
+                "reasoning": "Heuristic match for pure IMAGE request"
+            }
+
+        if not self.is_configured():
+            return {"action": "TEXT", "image_prompt": "", "reasoning": "Groq not configured"}
+
+        # 2. Lightweight LLM Intent Classification with fallback
+        client = self.get_client()
+        classification_models = ["groq/compound-mini", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]
+
+        context_snippets = []
+        if conversation_history:
+            for m in conversation_history[-3:]:
+                role = m.get("role", "user")
+                content = (m.get("content") or "")[:150]
+                if content:
+                    context_snippets.append(f"{role.upper()}: {content}")
+        context_str = "\n".join(context_snippets) if context_snippets else "None"
+
+        classification_prompt = (
+            "You are an intent router. Classify the user request into exactly one action:\n"
+            "- 'TEXT': question, explanation, coding, conversation, summary\n"
+            "- 'IMAGE': standalone request to generate/draw a picture, poster, wallpaper, or artwork\n"
+            "- 'BOTH': requests BOTH a full textual guide/explanation AND an accompanying image/infographic\n\n"
+            "Output valid JSON ONLY with NO other text:\n"
+            '{"action": "TEXT"|"IMAGE"|"BOTH", "image_prompt": "enhanced visual description if IMAGE or BOTH, else empty"}'
+        )
+
+        for c_model in classification_models:
+            try:
+                response = client.chat.completions.create(
+                    model=c_model,
+                    messages=[
+                        {"role": "system", "content": classification_prompt},
+                        {"role": "user", "content": f"Context: {context_str}\nUser Request: {cleaned}"}
+                    ],
+                    temperature=0.0,
+                    max_tokens=200,
+                    response_format={"type": "json_object"}
+                )
+                raw_json = response.choices[0].message.content.strip()
+                import json
+                result = json.loads(raw_json)
+                action = result.get("action", "TEXT").upper()
+                if action not in ("TEXT", "IMAGE", "BOTH"):
+                    action = "TEXT"
+                image_prompt = result.get("image_prompt", "").strip() if action in ("IMAGE", "BOTH") else ""
+                if action in ("IMAGE", "BOTH") and not image_prompt:
+                    image_prompt = cleaned
+                return {
+                    "action": action,
+                    "image_prompt": image_prompt,
+                    "reasoning": f"Routed via {c_model}"
+                }
+            except Exception as e:
+                logger.warning(f"Classifier model {c_model} skipped: {e}")
+                continue
+
+        return {"action": "TEXT", "image_prompt": "", "reasoning": "Fallback default"}
+
     def prepare_messages_for_groq(self, raw_messages, system_prompt=None, target_model=DEFAULT_CHAT_MODEL):
         """
         Transforms internal message format into Groq API format,
@@ -191,82 +316,90 @@ class GroqService:
                 
         return groq_messages
 
-    def generate_chat_stream(self, messages, model=DEFAULT_CHAT_MODEL, system_prompt=None, temperature=0.7, max_tokens=4096):
-        """Yields streaming chunks of assistant response with fallback."""
+    def generate_chat_stream(self, messages, model=DEFAULT_CHAT_MODEL, system_prompt=None, temperature=0.7, max_tokens=None):
+        """Yields streaming chunks of assistant response with automatic OTPM and 429 rate limit fallback."""
         client = self.get_client()
-        
-        # Validate or fallback model
         valid_model = model if model else DEFAULT_CHAT_MODEL
         
-        formatted_messages = self.prepare_messages_for_groq(
-            messages, 
-            system_prompt=system_prompt, 
-            target_model=valid_model
-        )
-        
-        try:
-            stream = client.chat.completions.create(
-                model=valid_model,
-                messages=formatted_messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=True
+        models_to_try = [valid_model]
+        for m in FALLBACK_MODELS:
+            if m not in models_to_try:
+                models_to_try.append(m)
+
+        last_error = None
+        for attempt_model in models_to_try:
+            safe_tokens = get_safe_max_tokens(attempt_model, max_tokens)
+            formatted_messages = self.prepare_messages_for_groq(
+                messages, 
+                system_prompt=system_prompt, 
+                target_model=attempt_model
             )
-            for chunk in stream:
-                delta = chunk.choices[0].delta
-                if delta and delta.content:
-                    yield delta.content
-        except Exception as e:
-            # If model failed with 404 or decommissioned, retry with default model
-            if valid_model != DEFAULT_CHAT_MODEL and ("404" in str(e) or "model" in str(e).lower()):
-                logger.warning(f"Model {valid_model} failed ({e}), falling back to {DEFAULT_CHAT_MODEL}")
+            
+            try:
                 stream = client.chat.completions.create(
-                    model=DEFAULT_CHAT_MODEL,
+                    model=attempt_model,
                     messages=formatted_messages,
                     temperature=temperature,
-                    max_tokens=max_tokens,
+                    max_tokens=safe_tokens,
                     stream=True
                 )
                 for chunk in stream:
                     delta = chunk.choices[0].delta
                     if delta and delta.content:
                         yield delta.content
-            else:
-                raise e
+                return
+            except Exception as e:
+                err_str = str(e).lower()
+                last_error = e
+                logger.warning(f"Model '{attempt_model}' failed with error: {e}. Trying fallback model...")
+                if "429" in err_str or "rate_limit" in err_str or "otpm" in err_str or "404" in err_str or "token" in err_str or "limit" in err_str:
+                    continue
+                else:
+                    raise e
+                    
+        if last_error:
+            raise last_error
 
-    def generate_chat_response(self, messages, model=DEFAULT_CHAT_MODEL, system_prompt=None, temperature=0.7, max_tokens=4096):
-        """Returns complete string of assistant response."""
+    def generate_chat_response(self, messages, model=DEFAULT_CHAT_MODEL, system_prompt=None, temperature=0.7, max_tokens=None):
+        """Returns complete string of assistant response with automatic OTPM and 429 rate limit fallback."""
         client = self.get_client()
         valid_model = model if model else DEFAULT_CHAT_MODEL
         
-        formatted_messages = self.prepare_messages_for_groq(
-            messages, 
-            system_prompt=system_prompt, 
-            target_model=valid_model
-        )
-        
-        try:
-            response = client.chat.completions.create(
-                model=valid_model,
-                messages=formatted_messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=False
+        models_to_try = [valid_model]
+        for m in FALLBACK_MODELS:
+            if m not in models_to_try:
+                models_to_try.append(m)
+
+        last_error = None
+        for attempt_model in models_to_try:
+            safe_tokens = get_safe_max_tokens(attempt_model, max_tokens)
+            formatted_messages = self.prepare_messages_for_groq(
+                messages, 
+                system_prompt=system_prompt, 
+                target_model=attempt_model
             )
-            return response.choices[0].message.content
-        except Exception as e:
-            if valid_model != DEFAULT_CHAT_MODEL and ("404" in str(e) or "model" in str(e).lower()):
-                logger.warning(f"Model {valid_model} failed ({e}), falling back to {DEFAULT_CHAT_MODEL}")
+            
+            try:
                 response = client.chat.completions.create(
-                    model=DEFAULT_CHAT_MODEL,
+                    model=attempt_model,
                     messages=formatted_messages,
                     temperature=temperature,
-                    max_tokens=max_tokens,
+                    max_tokens=safe_tokens,
                     stream=False
                 )
                 return response.choices[0].message.content
-            else:
-                raise e
+            except Exception as e:
+                err_str = str(e).lower()
+                last_error = e
+                logger.warning(f"Model '{attempt_model}' failed with error: {e}. Trying fallback model...")
+                if "429" in err_str or "rate_limit" in err_str or "otpm" in err_str or "404" in err_str or "token" in err_str or "limit" in err_str:
+                    continue
+                else:
+                    raise e
+                    
+        if last_error:
+            raise last_error
+
 
 # Global service instance
 groq_service = GroqService()

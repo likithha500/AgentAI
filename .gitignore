@@ -2,5 +2,10 @@
 .env.*
 !.env.example
 
+__pycache__/
+*.pyc
+*.db
+uploads/
+generated_images/
 node_modules/
-dist/
+dist/

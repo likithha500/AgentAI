@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import concurrent.futures
 from flask import Flask, render_template, request, jsonify, Response, send_from_directory, stream_with_context
 from dotenv import load_dotenv, set_key
 
@@ -11,12 +12,14 @@ load_dotenv(dotenv_path)
 import database
 import file_processor
 from groq_service import groq_service, AVAILABLE_MODELS
+from image_service import image_service, GENERATED_FOLDER
 
 # Setup Flask application
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "groq-chatbot-secret-key-2025")
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB max upload size
 app.config["UPLOAD_FOLDER"] = file_processor.UPLOAD_FOLDER
+app.config["GENERATED_FOLDER"] = GENERATED_FOLDER
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ChatbotApp")
@@ -151,6 +154,29 @@ def upload_files():
 def serve_upload(filename):
     return send_from_directory(app.config["UPLOAD_FOLDER"], filename)
 
+@app.route("/generated-images/<path:filename>")
+def serve_generated_image(filename):
+    return send_from_directory(app.config["GENERATED_FOLDER"], filename)
+
+# ================= IMAGE GENERATION ENDPOINT =================
+
+@app.route("/api/generate-image", methods=["POST"])
+def generate_image_endpoint():
+    data = request.get_json() or {}
+    prompt = data.get("prompt", "").strip()
+    if not prompt:
+        return jsonify({"success": False, "error": "Prompt cannot be empty"}), 400
+    try:
+        attachment = image_service.generate_image(prompt)
+        return jsonify({
+            "success": True,
+            "image_url": attachment["url"],
+            "attachment": attachment
+        })
+    except Exception as e:
+        logger.error(f"Image generation endpoint failed: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
 # ================= VOICE TRANSCRIPTION (WHISPER) =================
 
 @app.route("/api/transcribe", methods=["POST"])
@@ -228,6 +254,170 @@ def chat_endpoint():
     # Fetch full conversation history from DB
     history_messages = database.get_messages(session_id)
     
+    # Classify user intent (TEXT, IMAGE, BOTH)
+    intent = groq_service.classify_and_route_intent(
+        user_message=user_message_text,
+        conversation_history=history_messages[:-1],
+        attachments=attachments
+    )
+    action = intent.get("action", "TEXT")
+    image_prompt = intent.get("image_prompt") or user_message_text
+    
+    # Case 1: Pure IMAGE request
+    if action == "IMAGE":
+        if stream:
+            def generate_image_stream():
+                # Immediately send keepalive ping to establish SSE stream
+                yield ": keepalive\n\n"
+                try:
+                    img_attachment = image_service.generate_image(image_prompt)
+                    asst_msg_db = database.add_message(
+                        session_id=session_id,
+                        role="assistant",
+                        content="",
+                        attachments=[img_attachment]
+                    )
+                    done_payload = {
+                        "done": True,
+                        "session_id": session_id,
+                        "message_id": asst_msg_db["id"],
+                        "content": "",
+                        "attachments": [img_attachment],
+                        "type": "image",
+                        "image_url": img_attachment["url"]
+                    }
+                    yield f"data: {json.dumps(done_payload)}\n\n"
+                except Exception as e:
+                    logger.error(f"Image generation streaming error: {e}")
+                    err_text = f"⚠️ **Image generation error:** {str(e)}"
+                    asst_msg_db = database.add_message(session_id, "assistant", err_text)
+                    err_payload = {
+                        "error": str(e),
+                        "content": err_text,
+                        "done": True,
+                        "session_id": session_id
+                    }
+                    yield f"data: {json.dumps(err_payload)}\n\n"
+
+            return Response(stream_with_context(generate_image_stream()), mimetype="text/event-stream")
+        else:
+            try:
+                img_attachment = image_service.generate_image(image_prompt)
+                asst_msg_db = database.add_message(
+                    session_id=session_id,
+                    role="assistant",
+                    content="",
+                    attachments=[img_attachment]
+                )
+                return jsonify({
+                    "session_id": session_id,
+                    "user_message": user_msg_db,
+                    "assistant_message": asst_msg_db,
+                    "content": "",
+                    "attachments": [img_attachment],
+                    "type": "image",
+                    "image_url": img_attachment["url"]
+                })
+            except Exception as e:
+                logger.error(f"Image generation failed: {e}")
+                action = "TEXT"
+
+    # Case 2: BOTH (Text + Image)
+    if action == "BOTH":
+        if stream:
+            def generate_both_stream():
+                yield ": keepalive\n\n"
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                img_future = executor.submit(image_service.generate_image, image_prompt)
+                full_response = []
+                try:
+                    for chunk in groq_service.generate_chat_stream(
+                        messages=history_messages,
+                        model=model,
+                        system_prompt=system_prompt
+                    ):
+                        full_response.append(chunk)
+                        payload = json.dumps({"chunk": chunk, "session_id": session_id})
+                        yield f"data: {payload}\n\n"
+                    
+                    # Await image generation result
+                    generated_attachments = []
+                    try:
+                        img_att = img_future.result(timeout=45)
+                        if img_att:
+                            generated_attachments.append(img_att)
+                    except Exception as img_err:
+                        logger.error(f"Concurrent image generation failed in BOTH stream: {img_err}")
+
+                    final_content = "".join(full_response)
+                    asst_msg_db = database.add_message(
+                        session_id=session_id,
+                        role="assistant",
+                        content=final_content,
+                        attachments=generated_attachments
+                    )
+                    done_payload = {
+                        "done": True,
+                        "session_id": session_id,
+                        "message_id": asst_msg_db["id"],
+                        "content": final_content,
+                        "attachments": generated_attachments
+                    }
+                    if generated_attachments:
+                        done_payload["type"] = "image"
+                        done_payload["image_url"] = generated_attachments[0]["url"]
+                    yield f"data: {json.dumps(done_payload)}\n\n"
+                except Exception as e:
+                    logger.error(f"Streaming error in BOTH: {e}")
+                    err_text = f"\n\n**Error during generation**: {str(e)}"
+                    asst_msg_db = database.add_message(
+                        session_id=session_id,
+                        role="assistant",
+                        content="".join(full_response) + err_text,
+                        attachments=[]
+                    )
+                    err_payload = {"error": str(e), "done": True, "session_id": session_id}
+                    yield f"data: {json.dumps(err_payload)}\n\n"
+                finally:
+                    executor.shutdown(wait=False)
+
+            return Response(stream_with_context(generate_both_stream()), mimetype="text/event-stream")
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                img_future = executor.submit(image_service.generate_image, image_prompt)
+                text_future = executor.submit(
+                    groq_service.generate_chat_response,
+                    messages=history_messages,
+                    model=model,
+                    system_prompt=system_prompt
+                )
+                
+                response_content = text_future.result()
+                generated_attachments = []
+                try:
+                    img_att = img_future.result(timeout=45)
+                    if img_att:
+                        generated_attachments.append(img_att)
+                except Exception as img_err:
+                    logger.error(f"Image generation failed in non-stream BOTH: {img_err}")
+                    
+                asst_msg_db = database.add_message(
+                    session_id=session_id,
+                    role="assistant",
+                    content=response_content,
+                    attachments=generated_attachments
+                )
+                return jsonify({
+                    "session_id": session_id,
+                    "user_message": user_msg_db,
+                    "assistant_message": asst_msg_db,
+                    "content": response_content,
+                    "attachments": generated_attachments,
+                    "type": "image" if generated_attachments else "text",
+                    "image_url": generated_attachments[0]["url"] if generated_attachments else None
+                })
+
+    # Case 3: Pure TEXT request
     if stream:
         def generate():
             full_response = []
@@ -243,22 +433,34 @@ def chat_endpoint():
                     
                 # Save complete response to database
                 final_content = "".join(full_response)
-                asst_msg_db = database.add_message(session_id, "assistant", final_content)
-                done_payload = json.dumps({
+                asst_msg_db = database.add_message(
+                    session_id=session_id,
+                    role="assistant",
+                    content=final_content,
+                    attachments=[]
+                )
+                done_payload = {
                     "done": True,
                     "session_id": session_id,
                     "message_id": asst_msg_db["id"],
-                    "content": final_content
-                })
-                yield f"data: {done_payload}\n\n"
+                    "content": final_content,
+                    "attachments": []
+                }
+                yield f"data: {json.dumps(done_payload)}\n\n"
             except Exception as e:
                 logger.error(f"Streaming error: {e}")
                 err_text = f"\n\n**Error during generation**: {str(e)}"
-                asst_msg_db = database.add_message(session_id, "assistant", "".join(full_response) + err_text)
+                asst_msg_db = database.add_message(
+                    session_id=session_id,
+                    role="assistant",
+                    content="".join(full_response) + err_text,
+                    attachments=[]
+                )
                 err_payload = json.dumps({
                     "error": str(e),
                     "done": True,
-                    "session_id": session_id
+                    "session_id": session_id,
+                    "attachments": []
                 })
                 yield f"data: {err_payload}\n\n"
 
@@ -270,17 +472,45 @@ def chat_endpoint():
                 model=model,
                 system_prompt=system_prompt
             )
-            asst_msg_db = database.add_message(session_id, "assistant", response_content)
+            asst_msg_db = database.add_message(
+                session_id=session_id,
+                role="assistant",
+                content=response_content,
+                attachments=[]
+            )
             return jsonify({
                 "session_id": session_id,
                 "user_message": user_msg_db,
                 "assistant_message": asst_msg_db,
-                "content": response_content
+                "content": response_content,
+                "attachments": [],
+                "type": "text"
             })
         except Exception as e:
             logger.error(f"Chat error: {e}")
             err_msg = f"**Error calling Groq API:** {str(e)}"
-            asst_msg_db = database.add_message(session_id, "assistant", err_msg)
+            asst_msg_db = database.add_message(
+                session_id=session_id,
+                role="assistant",
+                content=err_msg,
+                attachments=[]
+            )
+            return jsonify({
+                "session_id": session_id,
+                "user_message": user_msg_db,
+                "assistant_message": asst_msg_db,
+                "content": err_msg,
+                "error": str(e)
+            }), 500
+        except Exception as e:
+            logger.error(f"Chat error: {e}")
+            err_msg = f"**Error calling Groq API:** {str(e)}"
+            asst_msg_db = database.add_message(
+                session_id=session_id,
+                role="assistant",
+                content=err_msg,
+                attachments=generated_attachments
+            )
             return jsonify({
                 "session_id": session_id,
                 "user_message": user_msg_db,

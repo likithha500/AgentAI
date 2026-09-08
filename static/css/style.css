@@ -847,16 +847,20 @@ html, body {
 }
 
 .msg-attachment-img {
-    max-width: 260px;
-    max-height: 220px;
-    border-radius: var(--radius-md);
+    max-width: 100%;
+    width: 440px;
+    max-height: 440px;
+    object-fit: cover;
+    border-radius: var(--radius-lg);
     cursor: pointer;
-    transition: transform var(--transition);
+    transition: transform var(--transition), box-shadow var(--transition);
     border: 1px solid var(--border-color);
-    box-shadow: var(--shadow-sm);
+    box-shadow: var(--shadow-md);
+    display: block;
 }
 .msg-attachment-img:hover {
-    transform: scale(1.02);
+    transform: scale(1.015);
+    box-shadow: var(--shadow-lg);
 }
 
 .msg-audio-player {

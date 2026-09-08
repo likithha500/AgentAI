@@ -622,14 +622,16 @@ class ChatbotApp {
 
                             if (json.done) {
                                 messageId = json.message_id;
-                                if (assistantMessageBubble) {
-                                    this.finalizeAssistantBubble(assistantMessageBubble, fullText, messageId);
+                                const attachments = json.attachments || [];
+                                if (!assistantMessageBubble) {
+                                    assistantMessageBubble = this.createAssistantStreamBubble();
                                 }
+                                this.finalizeAssistantBubble(assistantMessageBubble, fullText || json.content || '', messageId, attachments);
                                 this.loadSessions();
 
                                 // Auto speak TTS if enabled
                                 if (window.voiceManager && window.voiceManager.autoSpeak) {
-                                    window.voiceManager.speak(fullText, messageId);
+                                    window.voiceManager.speak(fullText || json.content || '', messageId);
                                 }
                             }
 
@@ -675,10 +677,13 @@ class ChatbotApp {
 
         let formattedContent = '';
         if (msg.role === 'user') {
-            formattedContent = `<p>${escapeHtml(msg.content)}</p>`;
+            formattedContent = msg.content ? `<p>${escapeHtml(msg.content)}</p>` : '';
         } else {
-            formattedContent = marked.parse(msg.content || '');
+            formattedContent = msg.content && msg.content.trim() ? marked.parse(msg.content) : '';
         }
+
+        const hasText = Boolean(formattedContent && formattedContent.trim());
+        const bubbleHtml = hasText ? `<div class="message-bubble markdown-body">${formattedContent}</div>` : '';
 
         row.innerHTML = `
             <div class="message-avatar">
@@ -686,24 +691,24 @@ class ChatbotApp {
             </div>
             <div class="message-bubble-wrapper">
                 ${attachmentsHtml}
-                <div class="message-bubble markdown-body">
-                    ${formattedContent}
-                </div>
+                ${bubbleHtml}
                 ${msg.role === 'assistant' ? `
                     <div class="message-actions">
+                        ${hasText ? `
                         <button class="msg-action-btn msg-speak-btn" data-msg-id="${msg.id}" title="Read aloud">
                             <i data-lucide="volume-2"></i>
-                        </button>
+                        </button>` : ''}
+                        ${hasText ? `
                         <button class="msg-action-btn msg-copy-btn" title="Copy response">
                             <i data-lucide="copy"></i>
-                        </button>
+                        </button>` : ''}
                     </div>
                 ` : ''}
             </div>
         `;
 
         // Event listeners for action buttons
-        if (msg.role === 'assistant') {
+        if (msg.role === 'assistant' && hasText) {
             const speakBtn = row.querySelector('.msg-speak-btn');
             if (speakBtn) {
                 speakBtn.addEventListener('click', () => {
@@ -765,36 +770,72 @@ class ChatbotApp {
         }
     }
 
-    finalizeAssistantBubble(row, fullText, messageId) {
+    finalizeAssistantBubble(row, fullText, messageId, attachments = []) {
         row.setAttribute('data-msg-id', messageId);
-        const bubble = row.querySelector('.message-bubble');
-        if (bubble) {
+        const wrapper = row.querySelector('.message-bubble-wrapper');
+        let bubble = row.querySelector('.message-bubble');
+
+        const hasText = Boolean(fullText && fullText.trim());
+
+        if (hasText) {
+            if (!bubble) {
+                bubble = document.createElement('div');
+                bubble.className = 'message-bubble markdown-body';
+                wrapper.appendChild(bubble);
+            }
             bubble.innerHTML = marked.parse(fullText);
+            bubble.style.display = 'block';
+        } else if (bubble) {
+            bubble.remove();
+        }
+
+        // Render any assistant attachments (e.g. generated images)
+        if (attachments && attachments.length > 0 && wrapper) {
+            let existingAtt = wrapper.querySelector('.message-attachments');
+            if (!existingAtt) {
+                const attHtml = this.renderMessageAttachments(attachments);
+                if (attHtml) {
+                    const tempDiv = document.createElement('div');
+                    tempDiv.innerHTML = attHtml;
+                    if (tempDiv.firstElementChild) {
+                        wrapper.prepend(tempDiv.firstElementChild);
+                    }
+                }
+            }
         }
 
         const speakBtn = row.querySelector('.msg-speak-btn');
         if (speakBtn) {
-            speakBtn.setAttribute('data-msg-id', messageId);
-            speakBtn.addEventListener('click', () => {
-                if (window.voiceManager) {
-                    if (window.voiceManager.isSpeaking && window.voiceManager.activeSpeakingMsgId === messageId) {
-                        window.voiceManager.stopSpeaking();
-                    } else {
-                        window.voiceManager.speak(fullText, messageId);
+            if (hasText) {
+                speakBtn.setAttribute('data-msg-id', messageId);
+                speakBtn.addEventListener('click', () => {
+                    if (window.voiceManager) {
+                        if (window.voiceManager.isSpeaking && window.voiceManager.activeSpeakingMsgId === messageId) {
+                            window.voiceManager.stopSpeaking();
+                        } else {
+                            window.voiceManager.speak(fullText, messageId);
+                        }
                     }
-                }
-            });
+                });
+            } else {
+                speakBtn.remove();
+            }
         }
 
         const copyBtn = row.querySelector('.msg-copy-btn');
         if (copyBtn) {
-            copyBtn.addEventListener('click', () => {
-                navigator.clipboard.writeText(fullText);
-                this.showToast('Copied message to clipboard', 'info');
-            });
+            if (hasText) {
+                copyBtn.addEventListener('click', () => {
+                    navigator.clipboard.writeText(fullText);
+                    this.showToast('Copied message to clipboard', 'info');
+                });
+            } else {
+                copyBtn.remove();
+            }
         }
 
         this.postProcessMessageBubble(row);
+        if (window.lucide) lucide.createIcons();
     }
 
     renderMessageAttachments(attachments) {
@@ -806,7 +847,12 @@ class ChatbotApp {
                 window.uploadManager.registerAttachment(att);
             }
             if (att.file_type === 'image') {
-                html += `<img src="${att.url || att.base64_data}" class="msg-attachment-img" alt="${escapeHtml(att.original_name)}" onclick="window.uploadManager.openMediaModal('${att.id}')" />`;
+                const imgUrl = att.url || att.base64_data;
+                html += `
+                    <div class="msg-image-wrapper">
+                        <img src="${imgUrl}" class="msg-attachment-img" alt="${escapeHtml(att.original_name || 'Generated Image')}" onclick="window.uploadManager.openMediaModal('${att.id}')" loading="lazy" />
+                    </div>
+                `;
             } else if (att.file_type === 'audio') {
                 html += `
                     <div style="display:flex; flex-direction:column; gap:4px; width:100%; max-width:320px;">

@@ -19,8 +19,8 @@ A browser-based AI chatbot powered by the Groq inference API, with multi-turn co
 
 ---
 
-![Chat interface](docs/screenshots/chat.png)
-![File/image upload](docs/screenshots/upload.png)
+![Chat Interface](docs/screenshots/chat.png)
+![AI Conversation and Image Generation](docs/screenshots/upload.png)
 
 ---
 

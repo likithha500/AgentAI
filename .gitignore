@@ -1,11 +1,44 @@
+# Environment / secrets
 .env
 .env.*
 !.env.example
 
+# Python
 __pycache__/
+*.py[cod]
 *.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Database (created at runtime)
 *.db
+*.sqlite3
+
+# Runtime-generated directories (created automatically on startup)
 uploads/
 generated_images/
+
+# Test / scratch files
+test_upload.txt
+
+# Node (no package.json in this project, but keep for safety)
 node_modules/
-dist/
+package-lock.json
+
+# Distribution / build
+dist/
+build/
+*.egg-info/
+
+# IDE / OS
+.vscode/
+.idea/
+*.DS_Store
+Thumbs.db

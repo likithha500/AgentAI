@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import secrets
 import concurrent.futures
 from flask import Flask, render_template, request, jsonify, Response, send_from_directory, stream_with_context
 from dotenv import load_dotenv, set_key
@@ -16,7 +17,7 @@ from image_service import image_service, GENERATED_FOLDER
 
 # Setup Flask application
 app = Flask(__name__)
-app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "groq-chatbot-secret-key-2025")
+app.config["SECRET_KEY"] = os.getenv("SECRET_KEY") or secrets.token_hex(32)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB max upload size
 app.config["UPLOAD_FOLDER"] = file_processor.UPLOAD_FOLDER
 app.config["GENERATED_FOLDER"] = GENERATED_FOLDER
@@ -45,6 +46,8 @@ def health_check():
 
 @app.route("/api/settings/key", methods=["POST"])
 def update_api_key():
+    if request.remote_addr != "127.0.0.1":
+        return jsonify({"success": False, "error": "Forbidden"}), 403
     data = request.get_json() or {}
     new_key = data.get("api_key", "").strip()
     
@@ -200,8 +203,8 @@ def transcribe_voice():
         logger.error(f"Voice transcription failed: {e}")
         return jsonify({"error": str(e)}), 500
     finally:
-        # Clean up temporary audio file if desired, or keep in uploads
-        pass
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 # ================= CHAT COMPLETIONS (STREAMING & NON-STREAMING) =================
 
@@ -502,25 +505,10 @@ def chat_endpoint():
                 "content": err_msg,
                 "error": str(e)
             }), 500
-        except Exception as e:
-            logger.error(f"Chat error: {e}")
-            err_msg = f"**Error calling Groq API:** {str(e)}"
-            asst_msg_db = database.add_message(
-                session_id=session_id,
-                role="assistant",
-                content=err_msg,
-                attachments=generated_attachments
-            )
-            return jsonify({
-                "session_id": session_id,
-                "user_message": user_msg_db,
-                "assistant_message": asst_msg_db,
-                "content": err_msg,
-                "error": str(e)
-            }), 500
+
 
 if __name__ == "__main__":
     port = int(os.getenv("FLASK_PORT", 5000))
-    debug = os.getenv("FLASK_DEBUG", "True").lower() in ("true", "1")
+    debug = os.getenv("FLASK_DEBUG", "False").lower() in ("true", "1")
     print(f"[GROQ CHATBOT] Server running at http://127.0.0.1:{port}")
-    app.run(host="0.0.0.0", port=port, debug=debug)
+    app.run(host="127.0.0.1", port=port, debug=debug)

@@ -24,7 +24,7 @@ def init_db():
             title TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            model TEXT DEFAULT 'qwen/qwen3.8-27b',
+            model TEXT DEFAULT 'openai/gpt-oss-120b',
             system_prompt TEXT DEFAULT ''
         )
     """)
@@ -49,7 +49,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-def create_session(title="New Chat", model="qwen/qwen3.8-27b", system_prompt=""):
+def create_session(title="New Chat", model="openai/gpt-oss-120b", system_prompt=""):
     session_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     conn = get_db_connection()

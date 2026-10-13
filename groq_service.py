@@ -8,59 +8,56 @@ load_dotenv()
 logger = logging.getLogger("GroqService")
 
 # Active verified Groq models
-DEFAULT_CHAT_MODEL = "qwen/qwen3.8-27b"
+DEFAULT_CHAT_MODEL = "openai/gpt-oss-120b"
 
 AVAILABLE_MODELS = [
     {
-        "id": "qwen/qwen3.8-27b",
-        "name": "Qwen 3.8 27B",
-        "description": "Ultra fast, highly capable reasoning & coding model",
-        "supports_vision": False,
-        "badge": "Recommended"
-    },
-    {
-        "id": "groq/compound-mini",
-        "name": "Groq Compound Mini",
-        "description": "High throughput instant responses for quick queries",
-        "supports_vision": False,
-        "badge": "Fastest"
-    },
-    {
-        "id": "groq/compound",
-        "name": "Groq Compound",
-        "description": "Advanced multi-step reasoning and deep analysis",
-        "supports_vision": False,
-        "badge": "Deep Reasoning"
-    },
-    {
         "id": "openai/gpt-oss-120b",
         "name": "GPT OSS 120B",
-        "description": "Large parameter model with extensive knowledge base",
+        "description": "Large-parameter model with broad knowledge and strong reasoning",
         "supports_vision": False,
-        "badge": "120B Large"
+        "badge": "Default",
+        "max_tokens": 1000
+    },
+    {
+        "id": "llama-3.3-70b-versatile",
+        "name": "Llama 3.3 70B",
+        "description": "Meta's latest 70B model — versatile, fast, and highly capable",
+        "supports_vision": False,
+        "badge": "Recommended",
+        "max_tokens": 4096
     },
     {
         "id": "openai/gpt-oss-20b",
         "name": "GPT OSS 20B",
         "description": "Compact and efficient for general everyday tasks",
         "supports_vision": False,
-        "badge": "Balanced"
+        "badge": "Balanced",
+        "max_tokens": 2048
     },
     {
-        "id": "allam-2-7b",
-        "name": "Allam 2 7B",
-        "description": "Bilingual multi-language conversation model",
+        "id": "llama-3.1-8b-instant",
+        "name": "Llama 3.1 8B Instant",
+        "description": "Ultra-low-latency 8B model for instant responses",
         "supports_vision": False,
-        "badge": "Multilingual"
+        "badge": "Fastest",
+        "max_tokens": 4096
+    },
+    {
+        "id": "qwen/qwen3.8-27b",
+        "name": "Qwen 3.8 27B (preview)",
+        "description": "Experimental reasoning and coding model — preview quality",
+        "supports_vision": False,
+        "badge": "Preview",
+        "max_tokens": 750
     }
 ]
 
 FALLBACK_MODELS = [
-    "groq/compound-mini",
+    "openai/gpt-oss-120b",
+    "llama-3.3-70b-versatile",
     "openai/gpt-oss-20b",
-    "qwen/qwen3.8-27b",
-    "groq/compound",
-    "allam-2-7b"
+    "llama-3.1-8b-instant"
 ]
 
 
@@ -78,6 +75,12 @@ def get_safe_max_tokens(model_name, requested_max=None):
         return min(requested_max or 750, 750)
     elif "120b" in model_lower:
         return min(requested_max or 1000, 1000)
+    elif "70b" in model_lower:
+        # llama-3.3-70b-versatile: 32 768 token context, up to 32 768 output
+        return min(requested_max or 4096, 4096)
+    elif "8b" in model_lower:
+        # llama-3.1-8b-instant: generous throughput on free tier
+        return min(requested_max or 4096, 4096)
     else:
         return min(requested_max or 2048, 2048)
 
@@ -123,39 +126,8 @@ class GroqService:
             return False, str(e)
 
     def get_active_models(self):
-        """Fetches dynamic model list from Groq API or falls back to AVAILABLE_MODELS."""
-        try:
-            if not self.is_configured():
-                return AVAILABLE_MODELS
-            
-            client = self.get_client()
-            remote_models = client.models.list().data
-            remote_ids = {m.id for m in remote_models}
-            
-            # Filter out non-chat / guard models (whisper, prompt-guard, safeguard)
-            chat_models = []
-            known_ids = set()
-            
-            for m in AVAILABLE_MODELS:
-                if m["id"] in remote_ids:
-                    chat_models.append(m)
-                    known_ids.add(m["id"])
-                    
-            for m in remote_models:
-                m_id = m.id
-                if m_id not in known_ids and not any(k in m_id.lower() for k in ["whisper", "guard", "audio"]):
-                    chat_models.append({
-                        "id": m_id,
-                        "name": m_id.split("/")[-1].replace("-", " ").title(),
-                        "description": "Active Groq Model",
-                        "supports_vision": "vision" in m_id.lower(),
-                        "badge": "Active"
-                    })
-                    
-            return chat_models if chat_models else AVAILABLE_MODELS
-        except Exception as e:
-            logger.warning(f"Failed to fetch remote models, using defaults: {e}")
-            return AVAILABLE_MODELS
+        """Returns the list of available models."""
+        return AVAILABLE_MODELS
 
     def transcribe_audio(self, audio_file_path, language=None):
         """Transcribe an audio file using Groq Whisper."""
@@ -216,7 +188,7 @@ class GroqService:
 
         # 2. Lightweight LLM Intent Classification with fallback
         client = self.get_client()
-        classification_models = ["groq/compound-mini", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]
+        classification_models = ["llama-3.1-8b-instant", "openai/gpt-oss-20b", "llama-3.3-70b-versatile"]
 
         context_snippets = []
         if conversation_history:

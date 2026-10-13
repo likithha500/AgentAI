@@ -80,7 +80,7 @@ def get_sessions():
 def create_new_session():
     data = request.get_json() or {}
     title = data.get("title", "New Chat")
-    model = data.get("model", "qwen/qwen3.8-27b")
+    model = data.get("model", "openai/gpt-oss-120b")
     system_prompt = data.get("system_prompt", "")
     
     session = database.create_session(title=title, model=model, system_prompt=system_prompt)
@@ -214,7 +214,7 @@ def chat_endpoint():
     session_id = data.get("session_id")
     user_message_text = data.get("message", "").strip()
     attachments = data.get("attachments", [])
-    model = data.get("model", "qwen/qwen3.8-27b")
+    model = data.get("model", "openai/gpt-oss-120b")
     system_prompt = data.get("system_prompt", "")
     stream = data.get("stream", True)
     

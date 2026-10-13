@@ -7,7 +7,7 @@ A browser-based AI chatbot powered by the Groq inference API, with multi-turn co
 ## Features
 
 - **Streaming chat** — Server-Sent Events (SSE) deliver token-by-token responses for a real-time feel.
-- **Multiple Groq models** — Switch between Qwen 3.8 27B, Groq Compound, Groq Compound Mini, GPT OSS 120B, GPT OSS 20B, and Allam 2 7B; automatic rate-limit fallback picks the next available model.
+- **Multiple Groq models** — Choose from GPT OSS 120B (default), Llama 3.3 70B, GPT OSS 20B, Llama 3.1 8B Instant, and Qwen 3.8 27B (preview); automatic rate-limit fallback picks the next available model.
 - **Intent routing** — The app classifies each user message as TEXT, IMAGE, or BOTH and handles each path independently (parallel text + image generation for BOTH).
 - **File attachments** — Upload PDFs (text extracted up to 50 pages), DOCX/DOC (paragraphs + tables), XLSX/XLS (up to 5 sheets, 150 rows each), CSV/TSV, plain text, Markdown, code files (30+ extensions), and images. Files are saved to `uploads/` and the extracted content is injected into the Groq prompt.
 - **Image generation** — Prompt the model to generate an image; the app calls Pollinations AI (free, default), OpenAI DALL-E 3, or Stability AI Core and stores results in `generated_images/`.

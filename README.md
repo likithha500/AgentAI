@@ -1,4 +1,4 @@
-﻿# Groq AI Chatbot
+# AgentAI
 
 A browser-based AI chatbot powered by the Groq inference API, with multi-turn conversation history, file/document analysis, voice transcription, and on-demand image generation.
 
@@ -18,12 +18,6 @@ A browser-based AI chatbot powered by the Groq inference API, with multi-turn co
 - **50 MB upload limit** — Configurable via Flask `MAX_CONTENT_LENGTH`.
 
 ---
-
-## Screenshots
-
-> **Suggested captures:**
-> 1. **`chat.png`** — The main chat window mid-conversation, showing a streamed Markdown response with code blocks and the sidebar listing past sessions.
-> 2. **`upload.png`** — The file/image panel open with a PDF and an AI-generated image visible in the same conversation thread.
 
 ![Chat interface](docs/screenshots/chat.png)
 ![File/image upload](docs/screenshots/upload.png)
@@ -119,8 +113,8 @@ Open your browser at **<http://127.0.0.1:5000>**.
 | `IMAGE_GENERATION_PROVIDER` | No | `pollinations` | Image backend: `pollinations` (free), `openai`, or `stability`. |
 | `IMAGE_API_KEY` | Conditional | — | API key for OpenAI or Stability AI when using those providers. |
 | `FLASK_PORT` | No | `5000` | Port the Flask development server listens on. |
-| `FLASK_DEBUG` | No | `True` | Set to `False` in production. |
-| `SECRET_KEY` | No | auto | Flask session secret. Set a strong random value in production. |
+| `FLASK_DEBUG` | No | `False` | Enable Flask debug mode. Leave `False` in production. |
+| `SECRET_KEY` | No | generated at startup | Flask session secret. Set a fixed value here to keep sessions stable across restarts. |
 
 ---
 
